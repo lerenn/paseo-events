@@ -7,3 +7,7 @@ Paseo plugin: event subscriptions from external services that wake agents or sta
 - Delivery: a steer message to the subscribing agent, or a Paseo Factory blueprint (when Factory is installed).
 
 See [OVERVIEW.md](OVERVIEW.md) and [docs/subscriptions.md](docs/subscriptions.md).
+
+## Status
+
+GitHub, Linear, Sentry, Datadog, signed webhook and external sources are implemented. Factory delivery is pending an agreed entry point.
