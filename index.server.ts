@@ -12,6 +12,9 @@ import { CredentialService } from "./server/service";
 import { SessionStore } from "./server/sessions";
 import { WebhookListener } from "./server/listener";
 import { ExternalSource } from "./server/sources/external";
+import { DatadogSource } from "./server/sources/datadog";
+import { LinearSource } from "./server/sources/linear";
+import { SentrySource } from "./server/sources/sentry";
 import { GitHubSource } from "./server/sources/github";
 import { WebhookSource } from "./server/sources/webhook";
 import type { Source } from "./server/sources/types";
@@ -25,6 +28,7 @@ export default function contribute(server: PluginServerContext) {
   const github = new GitHubClient(tokens);
   const webhookSecrets = new TokenStore(path.join(homedir(), ".paseo", "events", "webhook-secrets.json"));
   const externalSecrets = new TokenStore(path.join(homedir(), ".paseo", "events", "external-secrets.json"));
+  const serviceSecrets = new TokenStore(path.join(homedir(), ".paseo", "events", "service-secrets.json"));
   const sessions = new SessionStore();
   const settings = server.registerSettings(eventsSettings);
 
@@ -36,6 +40,9 @@ export default function contribute(server: PluginServerContext) {
   const webhook = new WebhookSource(webhookSecrets, () => latest.webhooks, (name) => void subscriptions.hint((s) => s.source === "webhook" && s.filter.name === name));
   webhook.setListener(() => ({ url: latest.webhookPublicUrl || listenerUrl, error: listenerError }));
   const githubSource = new GitHubSource(github, tokens);
+  const linear = new LinearSource(serviceSecrets);
+  const sentry = new SentrySource(serviceSecrets, () => latest.sentryUrl);
+  const datadog = new DatadogSource(serviceSecrets, () => latest.datadogSite);
   const external = (id: string) => externals.get(id)?.source;
   const sources = (): Source[] => {
     const wanted = new Set(latest.externalSources.map((e) => e.id));
@@ -47,7 +54,7 @@ export default function contribute(server: PluginServerContext) {
       void src.refreshTypes();
       externals.set(cfg.id, { key, source: src });
     }
-    return [githubSource, webhook, ...[...externals.values()].map((e) => e.source)];
+    return [githubSource, linear, sentry, datadog, webhook, ...[...externals.values()].map((e) => e.source)];
   };
 
   async function currentSettings() {
@@ -97,7 +104,7 @@ export default function contribute(server: PluginServerContext) {
     },
   });
   subscriptions.start();
-  const credentials = new CredentialService(github, tokens, webhookSecrets, externalSecrets);
+  const credentials = new CredentialService(github, tokens, webhookSecrets, externalSecrets, serviceSecrets, { linear: (s) => linear.validate(s), sentry: (s) => sentry.validate(s), datadog: (s) => datadog.validate(s) });
   const http = new EventsHttp({ sessions, mcp: new McpServer(eventsTools), context: () => ({ subscriptions, sources: sources() }) });
 
   let url: string | null = null;
@@ -142,6 +149,7 @@ export default function contribute(server: PluginServerContext) {
       factory: false,
       credentials: [
         ...tokens.owners().map((key) => ({ source: "github", key, error: github.errorFor(key) })),
+        ...["linear", "sentry", "datadog"].filter((k) => serviceSecrets.has(k)).map((key) => ({ source: key, key, error: null })),
         ...latest.webhooks.map((key) => ({ source: "webhook", key, error: webhookSecrets.has(key) ? null : "No secret set" })),
         ...latest.externalSources.map((e) => ({ source: "external", key: e.id, error: externalSecrets.has(e.id) ? null : "No secret set" })),
       ],

@@ -92,3 +92,58 @@ describe("external source", () => {
     void r;
   });
 });
+
+import { DatadogSource } from "./sources/datadog";
+import { LinearSource } from "./sources/linear";
+import { SentrySource } from "./sources/sentry";
+
+const json = (body: unknown) => new Response(JSON.stringify(body));
+function store(key: string, secret: string) {
+  const s = new TokenStore(path.join(tmp(), "s.json"));
+  s.set(key, secret);
+  return s;
+}
+
+describe("linear", () => {
+  it("emits issue_created and state_changed after the baseline", async () => {
+    let nodes: any[] = [];
+    const f = (async () => json({ data: { viewer: { id: "u" }, issues: { nodes } } })) as unknown as typeof fetch;
+    const src = new LinearSource(store("linear", "lin_key"), f);
+    const { baseline } = await src.init();
+    const t = new Date(Date.now() + 1000).toISOString();
+    nodes = [{ id: "i1", identifier: "ANY-1", title: "T", url: "u", createdAt: t, updatedAt: t, team: { key: "ANY" }, state: { name: "Todo" }, history: { nodes: [{ id: "h1", createdAt: t, fromState: { name: "Todo" }, toState: { name: "Done" } }] } }];
+    const f1 = await src.parseFilter({ types: ["issue_created", "state_changed"], states: ["Done"] });
+    const r = await src.poll(f1, baseline);
+    expect(r.events.map((e) => e.type).sort()).toEqual(["issue_created", "state_changed"]);
+  });
+});
+
+describe("sentry", () => {
+  it("emits issue_new once for issues first seen after subscribe", async () => {
+    let issues: any[] = [];
+    const f = (async () => json(issues)) as unknown as typeof fetch;
+    const src = new SentrySource(store("sentry", "tok"), () => "https://sentry.io", f);
+    const filter = await src.parseFilter({ org: "o", project: "p", level: ["error"] });
+    const { baseline } = await src.init(filter);
+    const t = new Date(Date.now() + 1000).toISOString();
+    issues = [{ id: "1", shortId: "P-1", title: "boom", level: "error", firstSeen: t, permalink: "u" }, { id: "2", shortId: "P-2", title: "x", level: "info", firstSeen: t }];
+    const r = await src.poll(filter, baseline);
+    expect(r.events).toHaveLength(1);
+    expect((await src.poll(filter, r.baseline)).events).toHaveLength(0);
+  });
+});
+
+describe("datadog", () => {
+  it("fires on transitions to Alert and back to OK", async () => {
+    let state = "OK";
+    const f = (async () => json([{ id: 7, name: "cpu", overall_state: state, overall_state_modified: "2026-01-01T00:00:00Z", tags: [] }])) as unknown as typeof fetch;
+    const src = new DatadogSource(store("datadog", "api:app"), () => "api.datadoghq.com", f);
+    const filter = await src.parseFilter({ types: ["alert_triggered", "alert_resolved"] });
+    const { baseline } = await src.init(filter);
+    state = "Alert";
+    const a = await src.poll(filter, baseline);
+    expect(a.events.map((e) => e.type)).toEqual(["alert_triggered"]);
+    state = "OK";
+    expect((await src.poll(filter, a.baseline)).events.map((e) => e.type)).toEqual(["alert_resolved"]);
+  });
+});

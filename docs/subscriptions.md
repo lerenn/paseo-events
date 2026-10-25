@@ -50,3 +50,14 @@ github_subscribe(repo, number, events, timeout_seconds, ignore_authors)
 ```
 
 Event names are unchanged. The wake-up text is the same shape, prefixed `[events]`.
+
+## Other sources
+
+| Source | Filter | Types | Credential |
+| --- | --- | --- | --- |
+| `linear` | `{types[], team?, issue?, states?}` | `issue_created`, `state_changed` | API key |
+| `sentry` | `{org, project, level?, query?, types?}` | `issue_new` | auth token (setting `sentryUrl` for self-hosted) |
+| `datadog` | `{types[], monitor_tags?, monitor_id?}` | `alert_triggered`, `alert_resolved` | `<api key>:<application key>` (setting `datadogSite`) |
+| `webhook`, external | see [extending.md](extending.md) | | HMAC secret / header value |
+
+All three poll every `pollSeconds` and only report what happened after the subscription started. Keys are write-only; a key the service rejects is not stored.

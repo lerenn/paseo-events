@@ -19,6 +19,10 @@ export const eventsSettings = defineSettings({
     maxTtlMinutes: z.number().int().min(1).default(1440),
     /** Persistent subscriptions group the events seen within this window into one wake-up. */
     batchSeconds: z.number().int().min(0).default(20),
+    /** Sentry base URL (self-hosted installs differ). */
+    sentryUrl: z.string().default("https://sentry.io"),
+    /** Datadog API host for your site, for example api.datadoghq.eu. */
+    datadogSite: z.string().default("api.datadoghq.com"),
     /** Port of the listener for signed webhooks and external-source pushes. 0 keeps it off. */
     webhookPort: z.number().int().min(0).max(65535).default(0),
     /** Interface the webhook listener binds to. Put a reverse proxy or tunnel in front of it. */

@@ -103,9 +103,12 @@ function Credentials({ credentials, styles, onChanged }: { credentials: { source
       {credentials.map((c) => (
         <View key={`${c.source}:${c.key}`} style={styles.line}>
           <Text style={styles.value}>{c.source} · {c.key}{c.error ? ` · ${c.error}` : ""}</Text>
-          {c.source === "github" ? null : <SecretForm credential={c} styles={styles} onChanged={onChanged} />}
+          {c.source === "github" ? null : <SecretForm label={c.source === "webhook" || c.source === "external" ? "Set secret" : "Replace key"} credential={c} styles={styles} onChanged={onChanged} />}
           <Button styles={styles} small label="Remove" onPress={() => void clear({ source: c.source, key: c.key }).then(onChanged)} />
         </View>
+      ))}
+      {(["linear", "sentry", "datadog"] as const).filter((s) => !credentials.some((c) => c.source === s)).map((s) => (
+        <SecretForm key={s} credential={{ source: s, key: s }} label={`Add ${s} key`} styles={styles} onChanged={onChanged} />
       ))}
       {adding ? (
         <View style={styles.form}>
@@ -125,7 +128,7 @@ function Credentials({ credentials, styles, onChanged }: { credentials: { source
 }
 
 /** Write-only secret for a webhook (HMAC key) or an external source (auth header value). */
-function SecretForm({ credential, styles, onChanged }: { credential: { source: string; key: string }; styles: Styles; onChanged(): void }) {
+function SecretForm({ credential, styles, onChanged, label = "Set secret" }: { credential: { source: string; key: string }; styles: Styles; onChanged(): void; label?: string }) {
   const set = useRpc(setCredentialRpc);
   const [open, setOpen] = useState(false);
   const [secret, setSecret] = useState("");
@@ -137,10 +140,10 @@ function SecretForm({ credential, styles, onChanged }: { credential: { source: s
       onChanged();
     },
   });
-  if (!open) return <Button styles={styles} small label="Set secret" onPress={() => setOpen(true)} />;
+  if (!open) return <Button styles={styles} small label={label} onPress={() => setOpen(true)} />;
   return (
     <View style={styles.form}>
-      <TextInput style={styles.input} value={secret} onChangeText={setSecret} placeholder={credential.source === "webhook" ? "HMAC secret" : "Header value, e.g. Bearer …"} placeholderTextColor={styles.placeholder.color} secureTextEntry autoCapitalize="none" autoCorrect={false} accessibilityLabel={`Secret for ${credential.key}`} />
+      <TextInput style={styles.input} value={secret} onChangeText={setSecret} placeholder={{ webhook: "HMAC secret", external: "Header value, e.g. Bearer …", datadog: "<api key>:<application key>" }[credential.source] ?? "API key or token"} placeholderTextColor={styles.placeholder.color} secureTextEntry autoCapitalize="none" autoCorrect={false} accessibilityLabel={`Secret for ${credential.key}`} />
       {save.error ? <Text style={styles.error}>{(save.error as Error).message}</Text> : null}
       <View style={styles.line}>
         <Button styles={styles} small primary disabled={!secret.trim() || save.isPending} label="Save" onPress={() => save.mutate()} />

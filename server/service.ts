@@ -8,12 +8,23 @@ export class CredentialService {
     private readonly tokens: TokenStore,
     private readonly webhookSecrets: TokenStore,
     private readonly externalSecrets: TokenStore,
+    private readonly serviceSecrets: TokenStore,
+    private readonly validators: Record<string, (secret: string) => Promise<void>>,
   ) {}
 
   /** Validate and store. A credential the service rejects is not kept. */
   async set(source: string, key: string, secret: string) {
     if (source === "webhook") return this.webhookSecrets.set(key, secret);
     if (source === "external") return this.externalSecrets.set(key, secret);
+    if (this.validators[source]) {
+      const secretText = secret.trim();
+      try {
+        await this.validators[source](secretText);
+      } catch (err) {
+        throw new Error(scrub(err instanceof Error ? err.message : String(err), secretText));
+      }
+      return this.serviceSecrets.set(source, secretText);
+    }
     if (source !== "github") throw new Error(`Source ${source} has no credentials to set yet.`);
     const previous = this.tokens.get(key);
     this.tokens.set(key, secret);
@@ -29,6 +40,7 @@ export class CredentialService {
   clear(source: string, key: string) {
     if (source === "github") this.tokens.clear(key);
     if (source === "webhook") this.webhookSecrets.clear(key);
+    if (this.validators[source]) this.serviceSecrets.clear(source);
     if (source === "external") this.externalSecrets.clear(key);
   }
 }
