@@ -19,6 +19,21 @@ export const eventsSettings = defineSettings({
     maxTtlMinutes: z.number().int().min(1).default(1440),
     /** Persistent subscriptions group the events seen within this window into one wake-up. */
     batchSeconds: z.number().int().min(0).default(20),
+    /** Port of the listener for signed webhooks and external-source pushes. 0 keeps it off. */
+    webhookPort: z.number().int().min(0).max(65535).default(0),
+    /** Interface the webhook listener binds to. Put a reverse proxy or tunnel in front of it. */
+    webhookBind: z.string().default("0.0.0.0"),
+    /** Public base URL of the listener, shown in the screen and given to external sources as push callback. */
+    webhookPublicUrl: z.string().default(""),
+    /** Webhook names. The HMAC secret of each is set write-only in the screen. */
+    webhooks: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/)).default([]),
+    /** External event servers (SEP-3415 style contract). The secret of each is set write-only in the screen. */
+    externalSources: z.array(z.object({
+      id: z.string().regex(/^[a-z][a-z0-9-]{0,30}$/),
+      name: z.string(),
+      url: z.string().url(),
+      authHeader: z.string().default("authorization"),
+    })).default([]),
   }),
 });
 export type EventsSettings = z.output<typeof eventsSettings.schema>;

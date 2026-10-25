@@ -33,7 +33,7 @@ export interface FactoryDelivery {
 }
 
 export interface ManagerDeps {
-  sources: Source[];
+  sources: () => Source[];
   settings: () => Promise<EventsSettings>;
   /** Wake an agent. Rejects when it cannot be reached. */
   send: (agentId: string, text: string) => Promise<void>;
@@ -112,8 +112,8 @@ export class SubscriptionManager {
   }
 
   private source(id: string): Source {
-    const s = this.d.sources.find((x) => x.id === id);
-    if (!s) throw new UsageError(`Unknown source: ${id}. Available: ${this.d.sources.map((x) => x.id).join(", ")}.`);
+    const s = this.d.sources().find((x) => x.id === id);
+    if (!s) throw new UsageError(`Unknown source: ${id}. Available: ${this.d.sources().map((x) => x.id).join(", ")}.`);
     return s;
   }
 
@@ -277,6 +277,7 @@ export class SubscriptionManager {
   private finish(s: Stored, status: SubscriptionView["status"], outcome: string) {
     s.status = status;
     s.outcome = outcome;
+    void this.d.sources().find((x) => x.id === s.source)?.close?.(s.filter, s.baseline);
     clearTimeout(this.timers.get(s.id));
     this.timers.delete(s.id);
     clearTimeout(this.rechecks.get(s.id));

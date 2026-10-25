@@ -3,10 +3,17 @@ import { scrub, type TokenStore } from "./tokens";
 
 /** Backs the screen's credential RPCs. Write-only: nothing here returns a secret. */
 export class CredentialService {
-  constructor(private readonly github: GitHubClient, private readonly tokens: TokenStore) {}
+  constructor(
+    private readonly github: GitHubClient,
+    private readonly tokens: TokenStore,
+    private readonly webhookSecrets: TokenStore,
+    private readonly externalSecrets: TokenStore,
+  ) {}
 
   /** Validate and store. A credential the service rejects is not kept. */
   async set(source: string, key: string, secret: string) {
+    if (source === "webhook") return this.webhookSecrets.set(key, secret);
+    if (source === "external") return this.externalSecrets.set(key, secret);
     if (source !== "github") throw new Error(`Source ${source} has no credentials to set yet.`);
     const previous = this.tokens.get(key);
     this.tokens.set(key, secret);
@@ -21,5 +28,7 @@ export class CredentialService {
 
   clear(source: string, key: string) {
     if (source === "github") this.tokens.clear(key);
+    if (source === "webhook") this.webhookSecrets.clear(key);
+    if (source === "external") this.externalSecrets.clear(key);
   }
 }

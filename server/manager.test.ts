@@ -27,7 +27,7 @@ function setup(pr: () => any, extra: Record<string, () => any> = {}) {
   const github = new GitHubClient(tokens, fetchImpl);
   const source = new GitHubSource(github, tokens, 0);
   const send = vi.fn(async () => {});
-  const manager = new SubscriptionManager({ sources: [source], settings: async () => eventsSettings.schema.parse({}), send, file: path.join(dir, "subs.json") });
+  const manager = new SubscriptionManager({ sources: () => [source], settings: async () => eventsSettings.schema.parse({}), send, file: path.join(dir, "subs.json") });
   return { manager, send, routes };
 }
 

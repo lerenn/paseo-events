@@ -43,6 +43,8 @@ export interface Source {
   describe(event: EventObject, filter: Record<string, any>): string;
   /** Used for the timeout notice: a line about the current state, or null. */
   stateLine?(filter: Record<string, any>, baseline: unknown): Promise<string | null>;
+  /** Release remote state when a subscription ends. Best effort. */
+  close?(filter: Record<string, any>, baseline: unknown): Promise<void>;
   status(): SourceView;
   /** Short label of what a subscription watches, for the screen. */
   label(filter: Record<string, any>): string;

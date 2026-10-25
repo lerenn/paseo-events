@@ -102,7 +102,8 @@ function Credentials({ credentials, styles, onChanged }: { credentials: { source
       <Text style={styles.label}>GitHub tokens, one per owner. Saved on this machine and never shown again.</Text>
       {credentials.map((c) => (
         <View key={`${c.source}:${c.key}`} style={styles.line}>
-          <Text style={styles.value}>{c.key}{c.error ? ` · ${c.error}` : ""}</Text>
+          <Text style={styles.value}>{c.source} · {c.key}{c.error ? ` · ${c.error}` : ""}</Text>
+          {c.source === "github" ? null : <SecretForm credential={c} styles={styles} onChanged={onChanged} />}
           <Button styles={styles} small label="Remove" onPress={() => void clear({ source: c.source, key: c.key }).then(onChanged)} />
         </View>
       ))}
@@ -119,6 +120,32 @@ function Credentials({ credentials, styles, onChanged }: { credentials: { source
       ) : (
         <Button styles={styles} small label="Add token" onPress={() => setAdding(true)} />
       )}
+    </View>
+  );
+}
+
+/** Write-only secret for a webhook (HMAC key) or an external source (auth header value). */
+function SecretForm({ credential, styles, onChanged }: { credential: { source: string; key: string }; styles: Styles; onChanged(): void }) {
+  const set = useRpc(setCredentialRpc);
+  const [open, setOpen] = useState(false);
+  const [secret, setSecret] = useState("");
+  const save = useMutation({
+    mutationFn: () => set({ source: credential.source, key: credential.key, secret }),
+    onSuccess: () => {
+      setSecret("");
+      setOpen(false);
+      onChanged();
+    },
+  });
+  if (!open) return <Button styles={styles} small label="Set secret" onPress={() => setOpen(true)} />;
+  return (
+    <View style={styles.form}>
+      <TextInput style={styles.input} value={secret} onChangeText={setSecret} placeholder={credential.source === "webhook" ? "HMAC secret" : "Header value, e.g. Bearer …"} placeholderTextColor={styles.placeholder.color} secureTextEntry autoCapitalize="none" autoCorrect={false} accessibilityLabel={`Secret for ${credential.key}`} />
+      {save.error ? <Text style={styles.error}>{(save.error as Error).message}</Text> : null}
+      <View style={styles.line}>
+        <Button styles={styles} small primary disabled={!secret.trim() || save.isPending} label="Save" onPress={() => save.mutate()} />
+        <Button styles={styles} small label="Cancel" onPress={() => setOpen(false)} />
+      </View>
     </View>
   );
 }
@@ -170,7 +197,7 @@ function SettingsPanel({ styles }: { styles: Styles }) {
     setError(null);
     await settings.save(parsed.data, settings.revision);
   };
-  const num = (key: "pollSeconds" | "defaultTtlMinutes" | "maxTtlMinutes" | "batchSeconds") => (text: string) => {
+  const num = (key: "pollSeconds" | "defaultTtlMinutes" | "maxTtlMinutes" | "batchSeconds" | "webhookPort") => (text: string) => {
     const n = Number(text);
     if (text.trim() && Number.isInteger(n)) void save({ [key]: n });
   };
@@ -180,6 +207,11 @@ function SettingsPanel({ styles }: { styles: Styles }) {
       <SettingsInput label="Default subscription lifetime (minutes)" initialValue={String(v.defaultTtlMinutes)} onChangeText={num("defaultTtlMinutes")} />
       <SettingsInput label="Longest lifetime an agent can ask for (minutes)" initialValue={String(v.maxTtlMinutes)} onChangeText={num("maxTtlMinutes")} />
       <SettingsInput label="Group events of persistent subscriptions within (seconds)" initialValue={String(v.batchSeconds)} onChangeText={num("batchSeconds")} />
+      <SettingsInput label="Webhook listener port (0 = off)" hint="Serves /events/webhook/<name> and /events/push/<source>. Put a tunnel or reverse proxy in front." initialValue={String(v.webhookPort)} onChangeText={num("webhookPort")} />
+      <SettingsInput label="Webhook listener bind address" initialValue={v.webhookBind} onChangeText={(t) => t.trim() && void save({ webhookBind: t.trim() })} />
+      <SettingsInput label="Webhook public URL" hint="For example https://events.example.com. Shown in the sources list and sent to external sources as push callback." initialValue={v.webhookPublicUrl} onChangeText={(t) => void save({ webhookPublicUrl: t.trim() })} />
+      <SettingsInput label="Webhook names (comma separated)" hint="Then set each one's HMAC secret under Sources." initialValue={v.webhooks.join(", ")} onChangeText={(t) => void save({ webhooks: t.split(",").map((n) => n.trim()).filter(Boolean) })} />
+      <SettingsInput label="External sources (id=url, comma separated)" hint="Event servers speaking events/list, events/subscribe, events/poll, events/unsubscribe. Then set each one's header value under Sources." initialValue={v.externalSources.map((e) => `${e.id}=${e.url}`).join(", ")} onChangeText={(t) => void save({ externalSources: t.split(",").map((p) => p.trim()).filter(Boolean).map((p) => { const [id, ...rest] = p.split("="); return { id: id.trim(), name: id.trim(), url: rest.join("=").trim(), authHeader: v.externalSources.find((e) => e.id === id.trim())?.authHeader ?? "authorization" }; }) })} />
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {settings.saveError ? <Text style={styles.error}>{settings.saveError}</Text> : null}
     </View>
