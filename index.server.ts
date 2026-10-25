@@ -1,0 +1,118 @@
+import path from "node:path";
+import { homedir } from "node:os";
+import type { PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
+import { eventsSettings } from "./shared/events";
+import { cancelSubscriptionRpc, clearCredentialRpc, setCredentialRpc, statusRpc } from "./shared/rpc";
+import { GitHubClient } from "./server/github";
+import { EventsHttp } from "./server/http";
+import { CAPABILITY_ENV, injectApplies, injectEvents } from "./server/inject";
+import { SubscriptionManager } from "./server/manager";
+import { McpServer } from "./server/mcp";
+import { CredentialService } from "./server/service";
+import { SessionStore } from "./server/sessions";
+import { GitHubSource } from "./server/sources/github";
+import { eventsTools } from "./server/tools";
+import { TokenStore } from "./server/tokens";
+
+const DEFAULT_PORT = 47841;
+
+export default function contribute(server: PluginServerContext) {
+  const tokens = new TokenStore(path.join(homedir(), ".paseo", "events", "tokens.json"));
+  const github = new GitHubClient(tokens);
+  const sources = [new GitHubSource(github, tokens)];
+  const sessions = new SessionStore();
+  const settings = server.registerSettings(eventsSettings);
+
+  async function currentSettings() {
+    const state = await settings.read();
+    return state.status === "ready" ? state.values : eventsSettings.schema.parse({});
+  }
+
+  // The Paseo API only reaches a plugin through hook and RPC contexts. Keep the first one seen,
+  // and let wake-ups wait for it.
+  let paseo: PluginHookContext["paseo"] | null = null;
+  let paseoReady!: () => void;
+  const hasPaseo = new Promise<void>((resolve) => (paseoReady = resolve));
+  const capture = (ctx: { paseo: PluginHookContext["paseo"] } | undefined) => {
+    if (ctx?.paseo && !paseo) {
+      paseo = ctx.paseo;
+      paseoReady();
+    }
+  };
+
+  const subscriptions = new SubscriptionManager({
+    sources,
+    settings: currentSettings,
+    send: async (agentId, text) => {
+      await Promise.race([hasPaseo, new Promise((_, reject) => setTimeout(() => reject(new Error("Paseo API not available yet")), 30_000))]);
+      await paseo!.agents.ref(agentId).send(text, { activeTurnBehavior: "steer" });
+    },
+  });
+  subscriptions.start();
+  const credentials = new CredentialService(github, tokens);
+  const http = new EventsHttp({ sessions, mcp: new McpServer(eventsTools), context: () => ({ subscriptions, sources }) });
+
+  let url: string | null = null;
+  let startError: string | null = null;
+  const port = Number(process.env.PASEO_EVENTS_PORT ?? DEFAULT_PORT);
+  const started = http.start(port).then(
+    (u) => {
+      url = u;
+    },
+    (err: Error) => {
+      startError = `events cannot listen on 127.0.0.1:${port}: ${err.message}. Set PASEO_EVENTS_PORT on the daemon.`;
+      console.error(startError);
+    },
+  );
+
+  const removeCreate = server.before("agent.create", async ({ request }, ctx) => {
+    capture(ctx);
+    if (!injectApplies((await currentSettings()).injectInto, request.env)) return;
+    await started;
+    // Without the endpoint the agent just does not get the tools; creating it must not fail.
+    if (!url) return;
+    return injectEvents(request, { url, capability: sessions.create(request.config.cwd) });
+  });
+  const removeOpen = server.before("agent.session_open", ({ request }, ctx) => {
+    capture(ctx);
+    const capability = request.env[CAPABILITY_ENV];
+    if (capability) sessions.bind(capability, request.agentId);
+  });
+  const removeArchived = server.on("agent.archived", ({ agent }, ctx) => {
+    capture(ctx);
+    sessions.forgetAgent(agent.id);
+    subscriptions.dropAgent(agent.id);
+  });
+
+  server.handle(statusRpc, (_input, ctx) => {
+    capture(ctx);
+    return {
+      sources: sources.map((s) => s.status()),
+      subscriptions: subscriptions.list().reverse(),
+      deliveries: subscriptions.recentDeliveries(),
+      endpoint: { url, error: startError },
+      factory: false,
+      credentials: tokens.owners().map((key) => ({ source: "github", key, error: github.errorFor(key) })),
+    };
+  });
+  server.handle(cancelSubscriptionRpc, ({ id }) => {
+    subscriptions.cancel(id);
+    return {};
+  });
+  server.handle(setCredentialRpc, async ({ source, key, secret }) => {
+    await credentials.set(source, key, secret);
+    return {};
+  });
+  server.handle(clearCredentialRpc, ({ source, key }) => {
+    credentials.clear(source, key);
+    return {};
+  });
+
+  return async () => {
+    removeCreate();
+    removeOpen();
+    removeArchived();
+    subscriptions.stop();
+    await http.stop();
+  };
+}
