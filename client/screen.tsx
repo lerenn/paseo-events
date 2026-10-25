@@ -29,8 +29,8 @@ export function EventsScreen({ theme, layout }: PluginScreenProps) {
       {query.error ? <Text style={styles.error}>{(query.error as Error).message}</Text> : null}
 
       <Section title="Sources" styles={styles}>
-        {data?.sources.map((s) => <SourceRow key={s.id} source={s} styles={styles} />)}
-        <Credentials credentials={data?.credentials ?? []} styles={styles} onChanged={reload} />
+        {data?.sources.map((src) => <SourceCard key={src.id} source={src} credentials={data.credentials} styles={styles} onChanged={reload} />)}
+        {data ? <SourceCard source={{ id: "external", name: "External event servers", state: "connected", detail: "Add servers below; each one also appears above." }} credentials={data.credentials} styles={styles} onChanged={reload} /> : null}
       </Section>
 
       <Section title="Active subscriptions" styles={styles}>
@@ -70,24 +70,76 @@ function Section({ title, summary, collapsible, styles, children }: { title: str
   );
 }
 
-function SourceRow({ source, styles }: { source: SourceView; styles: Styles }) {
+type Credential = { source: string; key: string; error: string | null };
+
+/** One source: status, its credentials and its own settings, collapsed by default when it is not configured. */
+function SourceCard({ source, credentials, styles, onChanged }: { source: SourceView; credentials: Credential[]; styles: Styles; onChanged(): void }) {
+  const [open, setOpen] = useState(source.state === "error");
+  const mine = credentials.filter((c) => c.source === source.id);
   return (
-    <View style={styles.field}>
-      <View style={styles.line}>
-        <Text style={styles.name}>{source.name}</Text>
-        <Text style={styles.badge}>{STATE_LABEL[source.state]}</Text>
-      </View>
+    <View style={styles.card}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} accessibilityLabel={source.name} onPress={() => setOpen((v) => !v)}>
+        <View style={styles.line}>
+          <Text style={styles.name}>{open ? "▾" : "▸"} {source.name}</Text>
+          <Text style={styles.badge}>{STATE_LABEL[source.state]}</Text>
+        </View>
+      </Pressable>
       {source.detail ? <Text style={styles.muted}>{source.detail}</Text> : null}
+      {open ? <SourceSettings source={source} credentials={mine} styles={styles} onChanged={onChanged} /> : null}
     </View>
   );
 }
 
-function Credentials({ credentials, styles, onChanged }: { credentials: { source: string; key: string; error: string | null }[]; styles: Styles; onChanged(): void }) {
+function SourceSettings({ source, credentials, styles, onChanged }: { source: SourceView; credentials: Credential[]; styles: Styles; onChanged(): void }) {
   const clear = useRpc(clearCredentialRpc);
+  const settings = useSettings(eventsSettings);
+  const [error, setError] = useState<string | null>(null);
+  const v = settings.status === "ready" ? settings.values : null;
+  const save = async (patch: Partial<NonNullable<typeof v>>) => {
+    if (!v || settings.status !== "ready") return;
+    const parsed = eventsSettings.schema.safeParse({ ...v, ...patch });
+    if (!parsed.success) return setError(parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`).join("; "));
+    setError(null);
+    await settings.save(parsed.data, settings.revision);
+  };
+  const credentialRows = credentials.map((c) => (
+    <View key={`${c.source}:${c.key}`} style={styles.line}>
+      <Text style={[styles.value, styles.grow]}>{c.key === c.source ? "Key" : c.key}{c.error ? ` · ${c.error}` : " · set"}</Text>
+      {source.id === "github" ? null : <SecretForm credential={c} label={source.id === "webhook" || source.id === "external" ? "Set secret" : "Replace key"} styles={styles} onChanged={onChanged} />}
+      <Button styles={styles} small label="Remove" onPress={() => void clear({ source: c.source, key: c.key }).then(onChanged)} />
+    </View>
+  ));
+  const addKey = (placeholder?: string) => credentials.length === 0 ? <SecretForm credential={{ source: source.id, key: source.id }} label={`Add ${source.name} key`} placeholder={placeholder} styles={styles} onChanged={onChanged} /> : null;
+  return (
+    <View style={styles.form}>
+      {source.id === "github" ? <GitHubTokens styles={styles} onChanged={onChanged} /> : null}
+      {credentialRows}
+      {source.id === "linear" ? addKey("Linear API key") : null}
+      {source.id === "sentry" ? addKey("Sentry auth token") : null}
+      {source.id === "datadog" ? addKey("<api key>:<application key>") : null}
+      {v && source.id === "sentry" ? <SettingsInput label="Sentry URL" hint="Change for self-hosted installs." initialValue={v.sentryUrl} onChangeText={(t) => t.trim() && void save({ sentryUrl: t.trim() })} /> : null}
+      {v && source.id === "datadog" ? <SettingsInput label="Datadog API host" hint="For your site, for example api.datadoghq.eu." initialValue={v.datadogSite} onChangeText={(t) => t.trim() && void save({ datadogSite: t.trim() })} /> : null}
+      {v && source.id === "webhook" ? (
+        <>
+          <SettingsInput label="Webhook names (comma separated)" hint="Then set each one's HMAC secret above." initialValue={v.webhooks.join(", ")} onChangeText={(t) => void save({ webhooks: t.split(",").map((n) => n.trim()).filter(Boolean) })} />
+          <SettingsInput label="Listener port (0 = off)" hint="Serves /events/webhook/<name> and /events/push/<source>. Put a tunnel or reverse proxy in front." initialValue={String(v.webhookPort)} onChangeText={(t) => Number.isInteger(Number(t)) && t.trim() && void save({ webhookPort: Number(t) })} />
+          <SettingsInput label="Listener bind address" initialValue={v.webhookBind} onChangeText={(t) => t.trim() && void save({ webhookBind: t.trim() })} />
+          <SettingsInput label="Public URL" hint="For example https://events.example.com. Also sent to external sources as push callback." initialValue={v.webhookPublicUrl} onChangeText={(t) => void save({ webhookPublicUrl: t.trim() })} />
+        </>
+      ) : null}
+      {v && source.id === "external" ? (
+        <SettingsInput label="External sources (id=url, comma separated)" hint="Event servers speaking events/list, events/subscribe, events/poll, events/unsubscribe. Then set each one's header value above." initialValue={v.externalSources.map((e) => `${e.id}=${e.url}`).join(", ")} onChangeText={(t) => void save({ externalSources: t.split(",").map((x) => x.trim()).filter(Boolean).map((x) => { const [id, ...rest] = x.split("="); return { id: id.trim(), name: id.trim(), url: rest.join("=").trim(), authHeader: v.externalSources.find((e) => e.id === id.trim())?.authHeader ?? "authorization" }; }) })} />
+      ) : null}
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+    </View>
+  );
+}
+
+function GitHubTokens({ styles, onChanged }: { styles: Styles; onChanged(): void }) {
   const set = useRpc(setCredentialRpc);
-  const [adding, setAdding] = useState(false);
   const [owner, setOwner] = useState("");
   const [token, setToken] = useState("");
+  const [adding, setAdding] = useState(false);
   const save = useMutation({
     mutationFn: () => set({ source: "github", key: owner.trim(), secret: token }),
     onSuccess: () => {
@@ -97,38 +149,23 @@ function Credentials({ credentials, styles, onChanged }: { credentials: { source
       onChanged();
     },
   });
+  if (!adding) return <Button styles={styles} small label="Add GitHub token" onPress={() => setAdding(true)} />;
   return (
-    <View style={styles.field}>
-      <Text style={styles.label}>GitHub tokens, one per owner. Saved on this machine and never shown again.</Text>
-      {credentials.map((c) => (
-        <View key={`${c.source}:${c.key}`} style={styles.line}>
-          <Text style={styles.value}>{c.source} · {c.key}{c.error ? ` · ${c.error}` : ""}</Text>
-          {c.source === "github" ? null : <SecretForm label={c.source === "webhook" || c.source === "external" ? "Set secret" : "Replace key"} credential={c} styles={styles} onChanged={onChanged} />}
-          <Button styles={styles} small label="Remove" onPress={() => void clear({ source: c.source, key: c.key }).then(onChanged)} />
-        </View>
-      ))}
-      {(["linear", "sentry", "datadog"] as const).filter((s) => !credentials.some((c) => c.source === s)).map((s) => (
-        <SecretForm key={s} credential={{ source: s, key: s }} label={`Add ${s} key`} styles={styles} onChanged={onChanged} />
-      ))}
-      {adding ? (
-        <View style={styles.form}>
-          <TextInput style={styles.input} value={owner} onChangeText={setOwner} placeholder="Owner, e.g. lerenn" placeholderTextColor={styles.placeholder.color} autoCapitalize="none" autoCorrect={false} accessibilityLabel="GitHub owner or organization" />
-          <TextInput style={styles.input} value={token} onChangeText={setToken} placeholder="Paste token" placeholderTextColor={styles.placeholder.color} secureTextEntry autoCapitalize="none" autoCorrect={false} accessibilityLabel="GitHub token" />
-          {save.error ? <Text style={styles.error}>{(save.error as Error).message}</Text> : null}
-          <View style={styles.line}>
-            <Button styles={styles} small primary disabled={!owner.trim() || !token.trim() || save.isPending} label={save.isPending ? "Checking with GitHub…" : "Save"} onPress={() => save.mutate()} />
-            <Button styles={styles} small label="Cancel" onPress={() => setAdding(false)} />
-          </View>
-        </View>
-      ) : (
-        <Button styles={styles} small label="Add token" onPress={() => setAdding(true)} />
-      )}
+    <View style={styles.form}>
+      <Text style={styles.label}>One token per owner. Saved on this machine and never shown again; adding an existing owner replaces it.</Text>
+      <TextInput style={styles.input} value={owner} onChangeText={setOwner} placeholder="Owner, e.g. lerenn" placeholderTextColor={styles.placeholder.color} autoCapitalize="none" autoCorrect={false} accessibilityLabel="GitHub owner or organization" />
+      <TextInput style={styles.input} value={token} onChangeText={setToken} placeholder="Paste token" placeholderTextColor={styles.placeholder.color} secureTextEntry autoCapitalize="none" autoCorrect={false} accessibilityLabel="GitHub token" />
+      {save.error ? <Text style={styles.error}>{(save.error as Error).message}</Text> : null}
+      <View style={styles.line}>
+        <Button styles={styles} small primary disabled={!owner.trim() || !token.trim() || save.isPending} label={save.isPending ? "Checking with GitHub…" : "Save"} onPress={() => save.mutate()} />
+        <Button styles={styles} small label="Cancel" onPress={() => setAdding(false)} />
+      </View>
     </View>
   );
 }
 
 /** Write-only secret for a webhook (HMAC key) or an external source (auth header value). */
-function SecretForm({ credential, styles, onChanged, label = "Set secret" }: { credential: { source: string; key: string }; styles: Styles; onChanged(): void; label?: string }) {
+function SecretForm({ credential, styles, onChanged, label = "Set secret", placeholder }: { credential: { source: string; key: string }; styles: Styles; onChanged(): void; label?: string; placeholder?: string }) {
   const set = useRpc(setCredentialRpc);
   const [open, setOpen] = useState(false);
   const [secret, setSecret] = useState("");
@@ -143,7 +180,7 @@ function SecretForm({ credential, styles, onChanged, label = "Set secret" }: { c
   if (!open) return <Button styles={styles} small label={label} onPress={() => setOpen(true)} />;
   return (
     <View style={styles.form}>
-      <TextInput style={styles.input} value={secret} onChangeText={setSecret} placeholder={{ webhook: "HMAC secret", external: "Header value, e.g. Bearer …", datadog: "<api key>:<application key>" }[credential.source] ?? "API key or token"} placeholderTextColor={styles.placeholder.color} secureTextEntry autoCapitalize="none" autoCorrect={false} accessibilityLabel={`Secret for ${credential.key}`} />
+      <TextInput style={styles.input} value={secret} onChangeText={setSecret} placeholder={placeholder ?? ({ webhook: "HMAC secret", external: "Header value, e.g. Bearer …" } as Record<string, string>)[credential.source] ?? "API key or token"} placeholderTextColor={styles.placeholder.color} secureTextEntry autoCapitalize="none" autoCorrect={false} accessibilityLabel={`Secret for ${credential.key}`} />
       {save.error ? <Text style={styles.error}>{(save.error as Error).message}</Text> : null}
       <View style={styles.line}>
         <Button styles={styles} small primary disabled={!secret.trim() || save.isPending} label="Save" onPress={() => save.mutate()} />
@@ -210,11 +247,7 @@ function SettingsPanel({ styles }: { styles: Styles }) {
       <SettingsInput label="Default subscription lifetime (minutes)" initialValue={String(v.defaultTtlMinutes)} onChangeText={num("defaultTtlMinutes")} />
       <SettingsInput label="Longest lifetime an agent can ask for (minutes)" initialValue={String(v.maxTtlMinutes)} onChangeText={num("maxTtlMinutes")} />
       <SettingsInput label="Group events of persistent subscriptions within (seconds)" initialValue={String(v.batchSeconds)} onChangeText={num("batchSeconds")} />
-      <SettingsInput label="Webhook listener port (0 = off)" hint="Serves /events/webhook/<name> and /events/push/<source>. Put a tunnel or reverse proxy in front." initialValue={String(v.webhookPort)} onChangeText={num("webhookPort")} />
-      <SettingsInput label="Webhook listener bind address" initialValue={v.webhookBind} onChangeText={(t) => t.trim() && void save({ webhookBind: t.trim() })} />
-      <SettingsInput label="Webhook public URL" hint="For example https://events.example.com. Shown in the sources list and sent to external sources as push callback." initialValue={v.webhookPublicUrl} onChangeText={(t) => void save({ webhookPublicUrl: t.trim() })} />
-      <SettingsInput label="Webhook names (comma separated)" hint="Then set each one's HMAC secret under Sources." initialValue={v.webhooks.join(", ")} onChangeText={(t) => void save({ webhooks: t.split(",").map((n) => n.trim()).filter(Boolean) })} />
-      <SettingsInput label="External sources (id=url, comma separated)" hint="Event servers speaking events/list, events/subscribe, events/poll, events/unsubscribe. Then set each one's header value under Sources." initialValue={v.externalSources.map((e) => `${e.id}=${e.url}`).join(", ")} onChangeText={(t) => void save({ externalSources: t.split(",").map((p) => p.trim()).filter(Boolean).map((p) => { const [id, ...rest] = p.split("="); return { id: id.trim(), name: id.trim(), url: rest.join("=").trim(), authHeader: v.externalSources.find((e) => e.id === id.trim())?.authHeader ?? "authorization" }; }) })} />
+      <SettingsInput label="Add Events tools to new agents (all or opt-in)" hint="opt-in: only agents created with PASEO_EVENTS=on. PASEO_EVENTS=off always opts an agent out." initialValue={v.injectInto} onChangeText={(t) => (t.trim() === "all" || t.trim() === "opt-in") && void save({ injectInto: t.trim() as "all" | "opt-in" })} />
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {settings.saveError ? <Text style={styles.error}>{settings.saveError}</Text> : null}
     </View>
@@ -256,6 +289,7 @@ function makeStyles(theme: PluginScreenProps["theme"], compact: boolean) {
     badge: { color: theme.colors.foregroundMuted, fontSize: 12, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
     panel: { gap: 10, padding: 14, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1 },
     field: { gap: 4 },
+    card: { gap: 6, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface0 },
     form: { gap: 8 },
     placeholder: { color: theme.colors.foregroundMuted },
     input: { minHeight: 36, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, color: theme.colors.foreground, fontSize: 14 },
