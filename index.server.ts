@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import type { PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { eventsSettings } from "./shared/events";
 import { cancelSubscriptionRpc, clearCredentialRpc, setCredentialRpc, statusRpc } from "./shared/rpc";
+import { HttpFactory } from "./server/factory";
 import { GitHubClient } from "./server/github";
 import { EventsHttp } from "./server/http";
 import { CAPABILITY_ENV, injectApplies, injectEvents } from "./server/inject";
@@ -95,8 +96,10 @@ export default function contribute(server: PluginServerContext) {
     }
   };
 
+  const factory = new HttpFactory();
   const subscriptions = new SubscriptionManager({
     sources,
+    factory,
     settings: currentSettings,
     send: async (agentId, text) => {
       await Promise.race([hasPaseo, new Promise((_, reject) => setTimeout(() => reject(new Error("Paseo API not available yet")), 30_000))]);
@@ -139,14 +142,14 @@ export default function contribute(server: PluginServerContext) {
     subscriptions.dropAgent(agent.id);
   });
 
-  server.handle(statusRpc, (_input, ctx) => {
+  server.handle(statusRpc, async (_input, ctx) => {
     capture(ctx);
     return {
       sources: sources().map((s) => s.status()),
       subscriptions: subscriptions.list().reverse(),
       deliveries: subscriptions.recentDeliveries(),
       endpoint: { url, error: startError },
-      factory: false,
+      factory: await factory.available(),
       credentials: [
         ...tokens.owners().map((key) => ({ source: "github", key, error: github.errorFor(key) })),
         ...["linear", "sentry", "datadog"].filter((k) => serviceSecrets.has(k)).map((key) => ({ source: key, key, error: null })),

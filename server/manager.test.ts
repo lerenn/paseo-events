@@ -99,3 +99,20 @@ describe("github subscriptions", () => {
     expect(manager.list()[0].status).toBe("active");
   });
 });
+
+describe("factory delivery", () => {
+  it("starts the blueprint with mapped vars and the event id as idempotency key", async () => {
+    const start = vi.fn(async () => "run1");
+    const { manager, routes } = setup(() => open({ state: "closed", merged_at: null }));
+    (manager as any).d.factory = { available: async () => true, start };
+    routes["/repos/lerenn/x/pulls/1"] = () => open();
+    const r: any = await manager.subscribe(
+      { agentId: "a1" },
+      { source: "github", filter: { repo: "lerenn/x", number: 1, types: ["pr_closed"] }, deliver: { kind: "factory", blueprint: "bp", vars_map: { pr: "subject", state: "data.sha" } } },
+    );
+    routes["/repos/lerenn/x/pulls/1"] = () => open({ state: "closed" });
+    await (manager as any).check(r.subscription.id);
+    expect(start).toHaveBeenCalledWith("bp", { pr: "lerenn/x#1", state: undefined }, expect.stringContaining(r.subscription.id));
+    expect(manager.recentDeliveries()[0]).toMatchObject({ ok: true, target: "factory:bp", detail: "run1" });
+  });
+});

@@ -61,3 +61,9 @@ Event names are unchanged. The wake-up text is the same shape, prefixed `[events
 | `webhook`, external | see [extending.md](extending.md) | | HMAC secret / header value |
 
 All three poll every `pollSeconds` and only report what happened after the subscription started. Keys are write-only; a key the service rejects is not stored.
+
+## Factory delivery
+
+`deliver: {kind:"factory", blueprint, vars_map}` starts a Paseo Factory blueprint per event. Factory is found at runtime, with no import: it writes `~/.paseo/factory/endpoint.json` (`{url, token}`, mode 0600), and the plugin reads it on every use. A missing file means Factory is not installed and `events_subscribe` refuses the delivery.
+
+`POST {url}/blueprints/start` with `Authorization: Bearer <token>` and body `{blueprint, vars, requestedBy:"events", idempotencyKey:"<subscription id>:<event id>"}` answers 200 `{runId}`, 404 (unknown blueprint), 400 (bad vars) or 401. The same key returns the same run. `vars_map` maps blueprint vars to event paths, for example `{"pr":"subject","sha":"data.sha"}` (`id`, `source`, `type`, `subject`, `time`, `data.*`). Each outcome (run id or error) appears in the screen's recent deliveries.

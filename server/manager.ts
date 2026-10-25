@@ -29,7 +29,7 @@ interface Stored {
 export interface FactoryDelivery {
   /** True when Paseo Factory is installed; detected at runtime, never imported. */
   available(): Promise<boolean>;
-  start(blueprint: string, vars: Record<string, unknown>): Promise<string>;
+  start(blueprint: string, vars: Record<string, unknown>, idempotencyKey: string): Promise<string>;
 }
 
 export interface ManagerDeps {
@@ -306,7 +306,7 @@ export class SubscriptionManager {
       for (const e of events) {
         try {
           const vars = Object.fromEntries(Object.entries(s.deliver.vars_map).map(([k, p]) => [k, readPath(e, p)]));
-          const run = await this.d.factory!.start(s.deliver.blueprint, vars);
+          const run = await this.d.factory!.start(s.deliver.blueprint, vars, `${s.id}:${e.id}`);
           this.record(s, [e.type], `factory:${s.deliver.blueprint}`, true, run);
         } catch (err) {
           this.record(s, [e.type], `factory:${s.deliver.blueprint}`, false, (err as Error).message);
