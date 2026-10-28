@@ -4,7 +4,7 @@
 
 | Tool | Purpose |
 | --- | --- |
-| `events_subscribe` | `source`, `filter`, `deliver?`, `ttl_seconds?`, `mode?`. Returns the subscription, or `{satisfied}` when the condition already holds (once mode). |
+| `events_subscribe` | `source`, `filter`, `deliver?` (`agent`, `mail`, `factory`), `ttl_seconds?`, `mode?`. Returns the subscription, or `{satisfied}` when the condition already holds (once mode). |
 | `events_list` | The caller's subscriptions, `source?` and `status?` filters. |
 | `events_unsubscribe` | Cancel one of the caller's active subscriptions. |
 | `events_sources` | Sources, connection status and event types. |
@@ -67,3 +67,9 @@ All three poll every `pollSeconds` and only report what happened after the subsc
 `deliver: {kind:"factory", blueprint, vars_map}` starts a Paseo Factory blueprint per event. Factory is found at runtime, with no import: it writes `~/.paseo/factory/endpoint.json` (`{url, token}`, mode 0600), and the plugin reads it on every use. A missing file means Factory is not installed and `events_subscribe` refuses the delivery.
 
 `POST {url}/blueprints/start` with `Authorization: Bearer <token>` and body `{blueprint, vars, requestedBy:"events", idempotencyKey:"<subscription id>:<event id>"}` answers 200 `{runId}`, 404 (unknown blueprint), 400 (bad vars) or 401. The same key returns the same run. `vars_map` maps blueprint vars to event paths, for example `{"pr":"subject","sha":"data.sha"}` (`id`, `source`, `type`, `subject`, `time`, `data.*`). Each outcome (run id or error) appears in the screen's recent deliveries.
+
+## Mail delivery
+
+`deliver: {kind:"mail", to?}` (or setting `defaultDeliver: "mail"` for subscriptions without a `deliver`; default `agent`) sends each delivery as one Agents Mail rather than a steer prompt, which lands mid-turn as a user message. Fired events, persistent batches and expiry ("nothing seen") notices are all mailed: subject `Event: <source> <types> <subject>` (`Event: <source> expired <label>` for an expiry), body the prompt text, sender `Events`.
+
+Agents Mail is found at runtime with no import, like Factory: it writes `~/.paseo/agents-mail/endpoint.json` (`{url, token}`, mode 0600; `EVENTS_MAIL_ENDPOINT` overrides the path). Events calls `GET {url}/api/health` (result reused for 60 s), then `POST {url}/api/mails` with `Authorization: Bearer <token>` and `{to, subject, body, kind:"info", asAgent:{agentId:"events", name:"Events"}}`. Subscribing with `kind:"mail"` is accepted even when Agents Mail is absent; the check happens at delivery. If the file is missing, the health check fails or the post is refused, the prompt is sent directly to the subscribing agent (with the usual retries), the failure is logged and appears in the screen's recent deliveries as a failed `mail:<to>` entry followed by the `agent:` one.

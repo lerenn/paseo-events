@@ -1,7 +1,7 @@
 {
   "id": "events",
   "name": "Events",
-  "description": "Event subscriptions to external services (GitHub, Linear, Sentry, Datadog) that wake agents or start Factory blueprints.",
+  "description": "Event subscriptions to external services (GitHub, Linear, Sentry, Datadog) that wake agents, mail them or start Factory blueprints.",
   "requirements": { "paseo": ">=0.11.2" },
   "build": [["npm", "ci"]]
 }
