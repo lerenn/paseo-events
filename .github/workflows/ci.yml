@@ -5,7 +5,10 @@ on:
   pull_request:
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Same variable and ci-1 labels as the anyshift-io workflows. Until a ci-1 runner is registered on this
+    # user-owned repository, the default is GitHub-hosted: set USE_GITHUB_HOSTED to 'false' to use ci-1.
+    # Once a runner exists, switch to the org expression (USE_GITHUB_HOSTED == 'true' && 'ubuntu-latest' || self-hosted).
+    runs-on: ${{ vars.USE_GITHUB_HOSTED == 'false' && fromJSON('["self-hosted","linux","x64","docker"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
