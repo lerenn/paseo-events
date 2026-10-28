@@ -248,6 +248,7 @@ function SettingsPanel({ styles }: { styles: Styles }) {
       <SettingsInput label="Longest lifetime an agent can ask for (minutes)" initialValue={String(v.maxTtlMinutes)} onChangeText={num("maxTtlMinutes")} />
       <SettingsInput label="Group events of persistent subscriptions within (seconds)" initialValue={String(v.batchSeconds)} onChangeText={num("batchSeconds")} />
       <SettingsInput label="Add Events tools to new agents (all or opt-in)" hint="opt-in: only agents created with PASEO_EVENTS=on. PASEO_EVENTS=off always opts an agent out." initialValue={v.injectInto} onChangeText={(t) => (t.trim() === "all" || t.trim() === "opt-in") && void save({ injectInto: t.trim() as "all" | "opt-in" })} />
+      <SettingsInput label="Default delivery (agent or mail)" hint="mail: events arrive as Agents Mail when it is installed, else as a direct prompt. A subscription's own deliver wins." initialValue={v.defaultDeliver} onChangeText={(t) => (t.trim() === "agent" || t.trim() === "mail") && void save({ defaultDeliver: t.trim() as "agent" | "mail" })} />
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {settings.saveError ? <Text style={styles.error}>{settings.saveError}</Text> : null}
     </View>

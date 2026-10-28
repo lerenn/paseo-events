@@ -32,12 +32,19 @@ export interface FactoryDelivery {
   start(blueprint: string, vars: Record<string, unknown>, idempotencyKey: string): Promise<string>;
 }
 
+export interface MailDelivery {
+  /** True when Agents Mail is installed and answering; detected at runtime, never imported. */
+  available(): Promise<boolean>;
+  send(to: string, subject: string, body: string): Promise<void>;
+}
+
 export interface ManagerDeps {
   sources: () => Source[];
   settings: () => Promise<EventsSettings>;
   /** Wake an agent. Rejects when it cannot be reached. */
   send: (agentId: string, text: string) => Promise<void>;
   factory?: FactoryDelivery;
+  mail?: MailDelivery;
   file?: string;
   tickMs?: number;
 }
@@ -139,7 +146,7 @@ export class SubscriptionManager {
     if (!caller.agentId) throw new UsageError("This session is not bound to an agent yet, so it cannot be woken. Try again in a moment.");
     const settings = await this.d.settings();
     const source = this.source(req.source);
-    const deliver: Deliver = req.deliver ?? { kind: "agent" };
+    const deliver: Deliver = req.deliver ?? { kind: settings.defaultDeliver };
     if (deliver.kind === "factory" && !(await this.d.factory?.available())) {
       throw new UsageError("Paseo Factory is not installed on this host, so deliver.kind=factory is unavailable. Use deliver {kind:\"agent\"}.");
     }
@@ -271,7 +278,7 @@ export class SubscriptionManager {
       line,
       "An expiry means nothing was seen, not that nothing happened: check the service if it matters.",
     ].join("\n");
-    await this.send(s, text, ["expired"]);
+    await this.send(s, text, ["expired"], `Event: ${source.id} expired ${source.label(s.filter)}`);
   }
 
   private finish(s: Stored, status: SubscriptionView["status"], outcome: string) {
@@ -321,10 +328,28 @@ export class SubscriptionManager {
       "",
       ended ? "This subscription has ended. Subscribe again if you still need to wait." : "This subscription stays active until it expires or you call events_unsubscribe.",
     ].join("\n");
-    await this.send(s, text, types);
+    const ref = [...new Set(events.map((e) => e.subject))].join(", ");
+    await this.send(s, text, types, `Event: ${source.id} ${[...new Set(types)].join(", ")} ${ref}`);
   }
 
-  private async send(s: Stored, text: string, types: string[]) {
+  /** One mail per delivery (batch, expiry) when deliver.kind=mail and Agents Mail answers; otherwise a direct prompt. */
+  private async send(s: Stored, text: string, types: string[], subject: string) {
+    if (s.deliver.kind === "mail") {
+      const to = s.deliver.to ?? s.agentId;
+      try {
+        if (!this.d.mail || !(await this.d.mail.available())) throw new Error("Agents Mail is not available");
+        await this.d.mail.send(to, subject, text);
+        this.record(s, types, `mail:${to.slice(0, 24)}`, true, null);
+        return;
+      } catch (err) {
+        console.error(`events: mail for ${s.id} failed (${(err as Error).message}); sending the prompt directly.`);
+        this.record(s, types, `mail:${to.slice(0, 24)}`, false, `${(err as Error).message}; fell back to a direct prompt`);
+      }
+    }
+    await this.sendDirect(s, text, types);
+  }
+
+  private async sendDirect(s: Stored, text: string, types: string[]) {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         await this.d.send(s.agentId, text);

@@ -11,3 +11,5 @@ Open the Events screen and add one GitHub token per owner or organization, for e
 ## Delivery
 
 `deliver: {kind: "agent"}` (the default) steers the subscribing agent with a prompt. `deliver: {kind: "factory", blueprint, vars_map}` starts a Paseo Factory blueprint instead, mapping event fields to blueprint variables; it is refused when Factory is not installed.
+
+`deliver: {kind: "mail", to?}` sends an Agents Mail instead, so the event does not interrupt a turn: one mail per delivery (a batch of a persistent subscription is one mail), subject `Event: <source> <types> <subject>`, body the same text as the prompt. `to` is an agent id, title or alias such as `@assistant` and defaults to the subscribing agent. Expiry notices are mailed too. If Agents Mail is not installed or not answering when the event arrives, the prompt is sent directly as with `kind: "agent"`, and the failure is logged and shown in the screen's recent deliveries. The setting `defaultDeliver` (`agent` by default, or `mail`) applies to subscriptions that name no delivery; a subscription's own `deliver` always wins.

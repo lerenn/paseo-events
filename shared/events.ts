@@ -19,6 +19,8 @@ export const eventsSettings = defineSettings({
     maxTtlMinutes: z.number().int().min(1).default(1440),
     /** Persistent subscriptions group the events seen within this window into one wake-up. */
     batchSeconds: z.number().int().min(0).default(20),
+    /** Delivery of a subscription that does not ask for one. "mail" sends Agents Mail (falls back to a direct prompt when it is absent). */
+    defaultDeliver: z.enum(["agent", "mail"]).default("agent"),
     /** Sentry base URL (self-hosted installs differ). */
     sentryUrl: z.string().default("https://sentry.io"),
     /** Datadog API host for your site, for example api.datadoghq.eu. */
@@ -54,6 +56,11 @@ export interface EventObject {
 
 export const deliverSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("agent") }),
+  z.object({
+    kind: z.literal("mail"),
+    /** Agent id, exact title or alias such as @assistant. Defaults to the subscribing agent. */
+    to: z.string().min(1).optional(),
+  }),
   z.object({
     kind: z.literal("factory"),
     blueprint: z.string().min(1),

@@ -116,3 +116,78 @@ describe("factory delivery", () => {
     expect(manager.recentDeliveries()[0]).toMatchObject({ ok: true, target: "factory:bp", detail: "run1" });
   });
 });
+
+describe("mail delivery", () => {
+  const sub = (manager: SubscriptionManager, deliver?: any) =>
+    manager.subscribe({ agentId: "a1" }, { source: "github", filter: { repo: "lerenn/x", number: 1, types: ["pr_merged"] }, deliver }) as Promise<any>;
+
+  it("sends one mail instead of a prompt, with the same body", async () => {
+    let pr = open();
+    const { manager, send } = setup(() => pr);
+    const mail = { available: vi.fn(async () => true), send: vi.fn(async () => {}) };
+    (manager as any).d.mail = mail;
+    const r = await sub(manager, { kind: "mail" });
+    pr = open({ state: "closed", merged_at: "x", merged_by: { login: "louis" } });
+    await (manager as any).check(r.subscription.id);
+    expect(send).not.toHaveBeenCalled();
+    expect(mail.send).toHaveBeenCalledTimes(1);
+    const [to, subject, body] = mail.send.mock.calls[0] as any;
+    expect(to).toBe("a1");
+    expect(subject).toBe("Event: github pr_merged lerenn/x#1");
+    expect(body).toContain("merged by louis");
+    expect(manager.recentDeliveries()[0]).toMatchObject({ ok: true, target: "mail:a1" });
+  });
+
+  it("mails the given address, and mails the expiry notice", async () => {
+    const { manager, send } = setup(() => open());
+    const mail = { available: async () => true, send: vi.fn(async () => {}) };
+    (manager as any).d.mail = mail;
+    const r = await sub(manager, { kind: "mail", to: "@assistant" });
+    await (manager as any).expire((manager as any).subs.find((x: any) => x.id === r.subscription.id));
+    expect(send).not.toHaveBeenCalled();
+    const [to, subject, body] = mail.send.mock.calls[0] as any;
+    expect(to).toBe("@assistant");
+    expect(subject).toMatch(/^Event: github expired /);
+    expect(body).toContain("expired");
+  });
+
+  it("falls back to the direct prompt when Agents Mail is unavailable or fails", async () => {
+    for (const mail of [undefined, { available: async () => false, send: vi.fn() }, { available: async () => true, send: vi.fn(async () => { throw new Error("boom"); }) }]) {
+      let pr = open();
+      const { manager, send } = setup(() => pr);
+      (manager as any).d.mail = mail;
+      const r = await sub(manager, { kind: "mail" });
+      pr = open({ state: "closed", merged_at: "x" });
+      await (manager as any).check(r.subscription.id);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect((send.mock.calls[0] as any)[0]).toBe("a1");
+      expect(manager.recentDeliveries().map((d) => d.ok)).toEqual([true, false]);
+    }
+  });
+
+  it("persistent mode sends one mail per batch", async () => {
+    let comments: any[] = [];
+    const { manager, send } = setup(() => open(), {
+      "/repos/lerenn/x/issues/1/comments?per_page=100": () => comments,
+      "/repos/lerenn/x/pulls/1/comments?per_page=100": () => [],
+    });
+    const mail = { available: async () => true, send: vi.fn(async () => {}) };
+    (manager as any).d.mail = mail;
+    (manager as any).d.settings = async () => eventsSettings.schema.parse({ batchSeconds: 0 });
+    const r: any = await manager.subscribe({ agentId: "a1" }, { source: "github", filter: { repo: "lerenn/x", number: 1, types: ["comment_created"] }, deliver: { kind: "mail" }, mode: "persistent" });
+    comments = [{ id: 1, user: { login: "u" }, body: "a" }, { id: 2, user: { login: "u" }, body: "b" }];
+    await (manager as any).check(r.subscription.id);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mail.send).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("defaultDeliver applies when the subscription names no delivery; default stays agent", async () => {
+    expect(eventsSettings.schema.parse({}).defaultDeliver).toBe("agent");
+    const { manager } = setup(() => open());
+    expect((await sub(manager)).subscription.deliver).toEqual({ kind: "agent" });
+    (manager as any).d.settings = async () => eventsSettings.schema.parse({ defaultDeliver: "mail" });
+    expect((await sub(manager)).subscription.deliver).toEqual({ kind: "mail" });
+    expect((await sub(manager, { kind: "agent" })).subscription.deliver).toEqual({ kind: "agent" });
+  });
+});

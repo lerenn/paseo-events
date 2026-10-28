@@ -4,6 +4,7 @@ import type { PluginHookContext, PluginServerContext } from "@getpaseo/plugin/se
 import { eventsSettings } from "./shared/events";
 import { cancelSubscriptionRpc, clearCredentialRpc, setCredentialRpc, statusRpc } from "./shared/rpc";
 import { HttpFactory } from "./server/factory";
+import { HttpMail } from "./server/mail";
 import { GitHubClient } from "./server/github";
 import { EventsHttp } from "./server/http";
 import { CAPABILITY_ENV, injectApplies, injectEvents } from "./server/inject";
@@ -100,6 +101,7 @@ export default function contribute(server: PluginServerContext) {
   const subscriptions = new SubscriptionManager({
     sources,
     factory,
+    mail: new HttpMail(),
     settings: currentSettings,
     send: async (agentId, text) => {
       await Promise.race([hasPaseo, new Promise((_, reject) => setTimeout(() => reject(new Error("Paseo API not available yet")), 30_000))]);
