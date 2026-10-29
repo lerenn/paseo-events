@@ -37,6 +37,8 @@ export const eventsSettings = defineSettings({
         }),
       )
       .default([]),
+    /** Logins whose reviews and comments are `codex_review` events of the GitHub source. */
+    codexLogins: z.array(z.string().min(1)).default(["chatgpt-codex-connector[bot]"]),
     /** Sentry base URL (self-hosted installs differ). */
     sentryUrl: z.string().default("https://sentry.io"),
     /** Datadog API host for your site, for example api.datadoghq.eu. */
