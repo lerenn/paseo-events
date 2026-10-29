@@ -21,6 +21,22 @@ export const eventsSettings = defineSettings({
     batchSeconds: z.number().int().min(0).default(20),
     /** Delivery of a subscription that does not ask for one. "mail" sends Agents Mail (falls back to a direct prompt when it is absent). */
     defaultDeliver: z.enum(["agent", "mail"]).default("agent"),
+    /** File holding the Slack bot token (xoxb-...), for the Slack source: a Kubernetes Secret the host mounts, never stored by this plugin. */
+    slackTokenFile: z.string().default("/etc/paseo/secrets/slack-factory-bot/token"),
+    /**
+     * Standing subscriptions: configuration, not an agent's. Persistent, never expire, not tied to any agent's life, delivered to a
+     * Factory blueprint or by mail (there is no agent to wake). Recreated when their definition changes.
+     */
+    standing: z
+      .array(
+        z.object({
+          id: z.string().regex(/^[a-z][a-z0-9-]{0,40}$/),
+          source: z.string().min(1),
+          filter: z.record(z.string(), z.unknown()).default({}),
+          deliver: z.unknown(),
+        }),
+      )
+      .default([]),
     /** Sentry base URL (self-hosted installs differ). */
     sentryUrl: z.string().default("https://sentry.io"),
     /** Datadog API host for your site, for example api.datadoghq.eu. */
