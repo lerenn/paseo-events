@@ -19,6 +19,7 @@ import { LinearSource } from "./server/sources/linear";
 import { SentrySource } from "./server/sources/sentry";
 import { GitHubSource } from "./server/sources/github";
 import { WebhookSource } from "./server/sources/webhook";
+import { SlackSource } from "./server/sources/slack";
 import type { Source } from "./server/sources/types";
 import { eventsTools } from "./server/tools";
 import { TokenStore } from "./server/tokens";
@@ -45,6 +46,7 @@ export default function contribute(server: PluginServerContext) {
   const linear = new LinearSource(serviceSecrets);
   const sentry = new SentrySource(serviceSecrets, () => latest.sentryUrl);
   const datadog = new DatadogSource(serviceSecrets, () => latest.datadogSite);
+  const slack = new SlackSource(() => latest.slackTokenFile);
   const external = (id: string) => externals.get(id)?.source;
   const sources = (): Source[] => {
     const wanted = new Set(latest.externalSources.map((e) => e.id));
@@ -56,7 +58,7 @@ export default function contribute(server: PluginServerContext) {
       void src.refreshTypes();
       externals.set(cfg.id, { key, source: src });
     }
-    return [githubSource, linear, sentry, datadog, webhook, ...[...externals.values()].map((e) => e.source)];
+    return [githubSource, linear, sentry, datadog, slack, webhook, ...[...externals.values()].map((e) => e.source)];
   };
 
   async function currentSettings() {
@@ -109,6 +111,18 @@ export default function contribute(server: PluginServerContext) {
     },
   });
   subscriptions.start();
+  // Standing subscriptions follow the settings: on start, on every change, and every few minutes (a failed one, such as a Slack
+  // token not mounted yet, is tried again).
+  let standingErrors: string[] = [];
+  const syncStanding = async () => {
+    const s = await currentSettings();
+    standingErrors = await subscriptions.ensureStanding(s.standing as never).catch((e: Error) => [e.message]);
+    for (const e of standingErrors) console.error(`events: standing subscription ${e}`);
+  };
+  void syncStanding();
+  const stopStanding = settings.subscribe(() => void syncStanding());
+  const standingTimer = setInterval(() => void syncStanding(), 5 * 60_000);
+  (standingTimer as unknown as { unref?: () => void }).unref?.();
   const credentials = new CredentialService(github, tokens, webhookSecrets, externalSecrets, serviceSecrets, { linear: (s) => linear.validate(s), sentry: (s) => sentry.validate(s), datadog: (s) => datadog.validate(s) });
   const http = new EventsHttp({ sessions, mcp: new McpServer(eventsTools), context: () => ({ subscriptions, sources: sources() }) });
 
@@ -179,6 +193,8 @@ export default function contribute(server: PluginServerContext) {
     removeArchived();
     subscriptions.stop();
     stopWatching();
+    stopStanding();
+    clearInterval(standingTimer);
     await listener.stop();
     await http.stop();
   };

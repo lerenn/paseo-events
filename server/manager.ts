@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "n
 import { homedir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Deliver, DeliveryView, EventObject, EventsSettings, SubscriptionView } from "../shared/events";
+import { deliverSchema, type Deliver, type DeliveryView, type EventObject, type EventsSettings, type SubscriptionView } from "../shared/events";
 import { UsageError, type Source } from "./sources/types";
 
 export const defaultStatePath = path.join(homedir(), ".paseo", "events", "subscriptions.json");
@@ -24,6 +24,8 @@ interface Stored {
   /** Ids already delivered, for dedupe. */
   seen: string[];
   restarted?: boolean;
+  /** A standing subscription (settings, not an agent): its definition, to recreate it when the definition changes. */
+  standing?: string;
 }
 
 export interface FactoryDelivery {
@@ -53,6 +55,8 @@ const HISTORY = 30;
 const DELIVERIES = 50;
 const MAX_ACTIVE = 100;
 const MAX_SEEN = 500;
+/** The expiry of a standing subscription: a valid date that never comes. */
+const NEVER = Date.UTC(9999, 11, 31);
 
 /** Read `a.b.c` from an event. The first segment is optional sugar for the event itself. */
 export function readPath(event: EventObject, p: string): unknown {
@@ -171,6 +175,44 @@ export class SubscriptionManager {
     return { subscription: this.view(sub) };
   }
 
+  /**
+   * Makes the active standing subscriptions match the settings: creates the missing ones, recreates a changed one (it keeps
+   * the events already seen, so a change does not deliver them again), cancels the ones removed. Errors are per definition.
+   */
+  async ensureStanding(defs: readonly { id: string; source: string; filter: Record<string, unknown>; deliver: unknown }[]): Promise<string[]> {
+    const errors: string[] = [];
+    const wanted = new Map(defs.map((d) => [`standing:${d.id}`, d]));
+    for (const s of this.active().filter((x) => x.standing)) {
+      const d = wanted.get(s.agentId);
+      if (!d || JSON.stringify(d) !== s.standing) this.finish(s, "cancelled", d ? "standing definition changed" : "standing definition removed");
+    }
+    for (const [owner, d] of wanted) {
+      const key = JSON.stringify(d);
+      if (this.active().some((x) => x.agentId === owner && x.standing === key)) continue;
+      try {
+        const parsed = deliverSchema.safeParse(d.deliver);
+        if (!parsed.success || parsed.data.kind === "agent") throw new UsageError("a standing subscription delivers to kind factory or mail (with `to`)");
+        if (parsed.data.kind === "mail" && !parsed.data.to) throw new UsageError("a standing mail delivery needs `to`");
+        const source = this.source(d.source);
+        const filter = await source.parseFilter(d.filter, {});
+        const { baseline } = await source.init(filter);
+        const previous = [...this.subs].reverse().find((x) => x.agentId === owner);
+        const now = Date.now();
+        const sub: Stored = {
+          id: randomUUID().slice(0, 8), agentId: owner, source: source.id, filter, deliver: parsed.data, mode: "persistent", createdAt: now,
+          expiresAt: NEVER, ttlSeconds: 0, baseline, status: "active", outcome: null, seen: previous?.seen ?? [], standing: key,
+        };
+        this.subs.push(sub);
+        this.trim();
+        this.save();
+        this.nextPoll.set(sub.id, now + (await this.d.settings()).pollSeconds * 1000);
+      } catch (err) {
+        errors.push(`${d.id}: ${(err as Error).message}`);
+      }
+    }
+    return errors;
+  }
+
   cancel(id: string, agentId?: string): boolean {
     const s = this.subs.find((x) => x.id === id && x.status === "active" && (!agentId || x.agentId === agentId));
     if (!s) return false;
@@ -189,6 +231,7 @@ export class SubscriptionManager {
   }
 
   private arm(s: Stored) {
+    if (s.standing) return; // never expires
     this.timers.set(s.id, setTimeout(() => void this.expire(s), Math.max(0, s.expiresAt - Date.now())));
   }
 
