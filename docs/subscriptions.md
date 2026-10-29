@@ -15,15 +15,16 @@ Naming follows the MCP Events draft (SEP-3415): `events_subscribe`/`list`/`unsub
 
 ## GitHub filter
 
-`{repo?, number | url, types[], head_sha?, ignore_authors?}`. `repo` defaults to the origin remote of the agent's directory.
+`{repo?, number | url, types[], head_sha?, ignore_authors?, authors?, include_edits?}`. `repo` defaults to the origin remote of the agent's directory. `head_sha` applies to checks, reviews (their `commit_id`) and `codex_review`; `authors` keeps only reviews and comments by those logins (the converse of `ignore_authors`).
 
 | Type | Fires when |
 | --- | --- |
 | `checks_completed` | The checks and statuses of the head (or `head_sha`) are all finished, at least one reported, and stay so for 20 s. A push restarts the wait. |
-| `review_submitted` | A review not there at subscribe time is submitted (not `PENDING`). |
+| `review_submitted` | A review not there at subscribe time is submitted (not `PENDING`), on `head_sha` when given. |
 | `pr_merged` / `pr_closed` | Merged / closed without merging. |
 | `pr_head_updated` | The head commit changed. |
-| `comment_created` | A new conversation or review comment. |
+| `comment_created` | A new conversation or review comment; with `include_edits: true`, also each edit of an existing one. |
+| `codex_review` | A new review or conversation comment by Codex (setting `codexLogins`), or an edit of its summary comment (deduped by comment id and `updated_at`). Data: `kind`, `commit_sha`, `status`, `has_unresolved_findings` from `codex-review-state:v1`. |
 
 ## Modes, ttl, delivery
 

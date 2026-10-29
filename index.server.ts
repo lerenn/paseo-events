@@ -42,7 +42,7 @@ export default function contribute(server: PluginServerContext) {
   let listenerError: string | null = null;
   const webhook = new WebhookSource(webhookSecrets, () => latest.webhooks, (name) => void subscriptions.hint((s) => s.source === "webhook" && s.filter.name === name));
   webhook.setListener(() => ({ url: latest.webhookPublicUrl || listenerUrl, error: listenerError }));
-  const githubSource = new GitHubSource(github, tokens);
+  const githubSource = new GitHubSource(github, tokens, undefined, () => latest.codexLogins);
   const linear = new LinearSource(serviceSecrets);
   const sentry = new SentrySource(serviceSecrets, () => latest.sentryUrl);
   const datadog = new DatadogSource(serviceSecrets, () => latest.datadogSite);

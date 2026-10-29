@@ -8,7 +8,7 @@ import { SubscriptionManager } from "./manager";
 import { GitHubSource } from "./sources/github";
 import { TokenStore } from "./tokens";
 
-function setup(pr: () => any, extra: Record<string, () => any> = {}) {
+function setup(pr: () => any, extra: Record<string, () => any> = {}, codexLogins?: string[]) {
   const dir = mkdtempSync(path.join(tmpdir(), "events-"));
   const tokens = new TokenStore(path.join(dir, "tokens.json"));
   tokens.set("lerenn", "tok");
@@ -25,7 +25,7 @@ function setup(pr: () => any, extra: Record<string, () => any> = {}) {
     return new Response(JSON.stringify(body), { status: 200, headers: { "x-ratelimit-remaining": "4000" } });
   }) as unknown as typeof fetch;
   const github = new GitHubClient(tokens, fetchImpl);
-  const source = new GitHubSource(github, tokens, 0);
+  const source = new GitHubSource(github, tokens, 0, codexLogins ? () => codexLogins : undefined);
   const send = vi.fn(async () => {});
   const manager = new SubscriptionManager({ sources: () => [source], settings: async () => eventsSettings.schema.parse({}), send, file: path.join(dir, "subs.json") });
   return { manager, send, routes };
@@ -97,6 +97,135 @@ describe("github subscriptions", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(send).toHaveBeenCalledTimes(1);
     expect(manager.list()[0].status).toBe("active");
+  });
+});
+
+describe("github review filters", () => {
+  const routesFor = (state: { reviews: any[]; comments: any[]; reviewComments?: any[] }) => ({
+    "/repos/lerenn/x/pulls/1/reviews?per_page=100": () => state.reviews,
+    "/repos/lerenn/x/issues/1/comments?per_page=100": () => state.comments,
+    "/repos/lerenn/x/pulls/1/comments?per_page=100": () => state.reviewComments ?? [],
+  });
+  const body = (i: number) => (send.mock?.calls ?? [])[i];
+  let send: any;
+  const subscribe = (manager: SubscriptionManager, filter: any, mode?: "once" | "persistent") =>
+    manager.subscribe({ agentId: "a1" }, { source: "github", filter: { repo: "lerenn/x", number: 1, ...filter }, mode }) as Promise<any>;
+
+  it("authors keeps only reviews and comments by those logins", async () => {
+    const state = { reviews: [] as any[], comments: [] as any[] };
+    const m = setup(() => open(), routesFor(state));
+    send = m.send;
+    const r = await subscribe(m.manager, { types: ["review_submitted", "comment_created"], authors: ["Codecov-Bot", "sjourdan"] });
+    state.comments = [{ id: 1, user: { login: "linear[bot]" }, body: "linked" }];
+    state.reviews = [{ id: 2, user: { login: "someone" }, state: "COMMENTED", body: "x" }];
+    await (m.manager as any).check(r.subscription.id);
+    expect(send).not.toHaveBeenCalled();
+    state.reviews.push({ id: 3, user: { login: "sjourdan" }, state: "APPROVED", body: "lgtm", commit_id: "aaa" });
+    await (m.manager as any).check(r.subscription.id);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(body(0)[1]).toContain("Review on lerenn/x#1 by sjourdan: APPROVED");
+    expect(body(0)[1]).not.toContain("someone");
+  });
+
+  it("head_sha limits review_submitted to reviews of that commit", async () => {
+    const state = { reviews: [] as any[], comments: [] as any[] };
+    const m = setup(() => open(), routesFor(state));
+    send = m.send;
+    const r = await subscribe(m.manager, { types: ["review_submitted"], head_sha: "bbb" });
+    state.reviews = [{ id: 1, user: { login: "u" }, state: "COMMENTED", body: "old head", commit_id: "aaa" }];
+    await (m.manager as any).check(r.subscription.id);
+    expect(send).not.toHaveBeenCalled();
+    state.reviews.push({ id: 2, user: { login: "u" }, state: "COMMENTED", body: "new head", commit_id: "bbb" });
+    await (m.manager as any).check(r.subscription.id);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(body(0)[1]).toContain("new head");
+  });
+
+  it("comment_created ignores edits by default and reports them with include_edits", async () => {
+    const state = { reviews: [] as any[], comments: [{ id: 1, user: { login: "u" }, body: "v1", created_at: "t0", updated_at: "t0" }] };
+    const m = setup(() => open(), routesFor(state));
+    send = m.send;
+    (m.manager as any).d.settings = async () => eventsSettings.schema.parse({ batchSeconds: 0 });
+    const plain = await subscribe(m.manager, { types: ["comment_created"] });
+    const edits = await subscribe(m.manager, { types: ["comment_created"], include_edits: true }, "persistent");
+    state.comments = [{ id: 1, user: { login: "u" }, body: "v2", created_at: "t0", updated_at: "t1" }];
+    await (m.manager as any).check(plain.subscription.id);
+    expect(send).not.toHaveBeenCalled();
+    await (m.manager as any).check(edits.subscription.id);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(body(0)[1]).toContain("Comment edited on lerenn/x#1 by u");
+    expect(body(0)[1]).toContain("v2");
+    // The same version is not reported twice; a further edit is.
+    await (m.manager as any).check(edits.subscription.id);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(send).toHaveBeenCalledTimes(1);
+    state.comments = [{ id: 1, user: { login: "u" }, body: "v3", created_at: "t0", updated_at: "t2" }];
+    await (m.manager as any).check(edits.subscription.id);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(body(1)[1]).toContain("v3");
+  });
+
+  const CODEX = "chatgpt-codex-connector[bot]";
+  const summary = (sha: string, status: string, unresolved: boolean, updated: string) => ({
+    id: 10,
+    user: { login: CODEX },
+    created_at: "t0",
+    updated_at: updated,
+    html_url: "https://github.com/lerenn/x/pull/1#issuecomment-10",
+    body: `## Codex Review Summary\n<!-- codex-review-state:v1 {"commit_sha":"${sha}","status":"${status}","has_unresolved_findings":${unresolved}} -->`,
+  });
+
+  it("codex_review fires on an edit of the Codex summary comment, with its state", async () => {
+    const state = { reviews: [] as any[], comments: [summary("aaa", "in_progress", false, "t0"), { id: 11, user: { login: "u" }, body: "@codex review" }] };
+    const m = setup(() => open(), routesFor(state));
+    send = m.send;
+    const r = await subscribe(m.manager, { types: ["codex_review"] });
+    await (m.manager as any).check(r.subscription.id);
+    expect(send).not.toHaveBeenCalled();
+    state.comments = [summary("aaa", "done", false, "t1"), { id: 11, user: { login: "u" }, body: "@codex review" }, { id: 12, user: { login: "u" }, body: "thanks" }];
+    await (m.manager as any).check(r.subscription.id);
+    expect(send).toHaveBeenCalledTimes(1);
+    const text = body(0)[1];
+    expect(text).toContain(`Codex summary comment edited on lerenn/x#1 by ${CODEX} (commit aaa), status done, no unresolved findings`);
+    expect(text).not.toContain("thanks");
+  });
+
+  it("codex_review with head_sha waits for that commit, and sees Codex reviews", async () => {
+    const state = { reviews: [] as any[], comments: [summary("aaa", "done", true, "t0")] };
+    const m = setup(() => open({ head: { sha: "bbb" } }), {
+      ...routesFor(state),
+    });
+    send = m.send;
+    const r = await subscribe(m.manager, { types: ["codex_review"], head_sha: "bbb" });
+    state.reviews = [{ id: 5, user: { login: CODEX }, state: "COMMENTED", body: "old", commit_id: "aaa" }];
+    state.comments = [summary("aaa", "done", true, "t1")];
+    await (m.manager as any).check(r.subscription.id);
+    expect(send).not.toHaveBeenCalled();
+    state.reviews.push({ id: 6, user: { login: CODEX }, state: "COMMENTED", body: "P2: fix this", commit_id: "bbb" });
+    await (m.manager as any).check(r.subscription.id);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(body(0)[1]).toContain("Codex review (COMMENTED) on lerenn/x#1");
+    expect(body(0)[1]).toContain("(commit bbb)");
+  });
+
+  it("codex_review follows the codexLogins setting", async () => {
+    const state = { reviews: [] as any[], comments: [] as any[] };
+    const m = setup(() => open(), routesFor(state), ["my-codex[bot]"]);
+    send = m.send;
+    const r = await subscribe(m.manager, { types: ["codex_review"] });
+    state.comments = [{ id: 1, user: { login: CODEX }, body: "default bot" }];
+    await (m.manager as any).check(r.subscription.id);
+    expect(send).not.toHaveBeenCalled();
+    state.comments.push({ id: 2, user: { login: "My-Codex[bot]" }, body: "custom bot", created_at: "t0", updated_at: "t0" });
+    await (m.manager as any).check(r.subscription.id);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(body(0)[1]).toContain("custom bot");
+  });
+
+  it("settings default codexLogins to the Codex connector", () => {
+    expect(eventsSettings.schema.parse({}).codexLogins).toEqual([CODEX]);
   });
 });
 
