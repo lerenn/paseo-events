@@ -150,7 +150,12 @@ export class SubscriptionManager {
     if (!caller.agentId) throw new UsageError("This session is not bound to an agent yet, so it cannot be woken. Try again in a moment.");
     const settings = await this.d.settings();
     const source = this.source(req.source);
-    const deliver: Deliver = req.deliver ?? { kind: settings.defaultDeliver };
+    let deliver: Deliver = req.deliver ?? { kind: settings.defaultDeliver };
+    // With Agents Mail installed, an event never interrupts a turn: kind "agent" becomes a mail to the caller (decision 7505a89e).
+    if (deliver.kind === "agent" && this.d.mail && (await this.d.mail.available().catch(() => false))) {
+      console.info(`events: deliver kind "agent" for ${caller.agentId} overridden to "mail" (Agents Mail is installed)`);
+      deliver = { kind: "mail" };
+    }
     if (deliver.kind === "factory" && !(await this.d.factory?.available())) {
       throw new UsageError("Paseo Factory is not installed on this host, so deliver.kind=factory is unavailable. Use deliver {kind:\"agent\"}.");
     }

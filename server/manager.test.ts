@@ -138,6 +138,15 @@ describe("mail delivery", () => {
     expect(manager.recentDeliveries()[0]).toMatchObject({ ok: true, target: "mail:a1" });
   });
 
+  it("turns kind agent (asked or default) into a mail to the caller when Agents Mail is installed", async () => {
+    const { manager } = setup(() => open());
+    (manager as any).d.mail = { available: async () => true, send: vi.fn(async () => {}) };
+    expect((await sub(manager, { kind: "agent" })).subscription.deliver).toEqual({ kind: "mail" });
+    expect((await sub(manager)).subscription.deliver).toEqual({ kind: "mail" });
+    (manager as any).d.mail = { available: async () => false, send: vi.fn() };
+    expect((await sub(manager, { kind: "agent" })).subscription.deliver).toEqual({ kind: "agent" });
+  });
+
   it("mails the given address, and mails the expiry notice", async () => {
     const { manager, send } = setup(() => open());
     const mail = { available: async () => true, send: vi.fn(async () => {}) };
